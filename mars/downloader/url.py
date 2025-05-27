@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 def _fancy_bytes_format(size_in_b):
-    if not isinstance(size_in_b, numbers.Number):
+    if not isinstance(size_in_b, int):
         return
     KB = 1024
     MB = 1024 * KB
@@ -34,8 +34,8 @@ def downloader(url, dst_path=None):
         return None
 
     if dst_path is None:
-        dst_path = url.split('/')[-1]
-    elif dst_path != '':
+        dst_path = url.split("/")[-1]
+    elif dst_path != "":
         # make dir if not exists
         dst_dir = os.path.dirname(dst_path)
         if dst_dir is None:
@@ -44,20 +44,23 @@ def downloader(url, dst_path=None):
             os.makedirs(dst_dir)
         filename = os.path.basename(dst_path)
         if filename is None:
-            filename = url.split('/')[-1]
+            filename = url.split("/")[-1]
             dst_path = os.path.join(dst_dir, filename)
     else:
         return None
 
-    if dst_path is None or dst_path == '':
+    if dst_path is None or dst_path == "":
         return None
 
     # open url
     with urllib.request.urlopen(url) as response:
         # info of file
         content_len = int(response.getheader("Content-Length"))
-        logger.info("file @name: {0}, @size: {1}".format(
-            dst_path, _fancy_bytes_format(content_len)))
+        logger.info(
+            "file @name: {0}, @size: {1}".format(
+                dst_path, _fancy_bytes_format(content_len)
+            )
+        )
         # download procedure
         sizeOfWritten = 0
         tmp_file_name = dst_path + ".tmp"
@@ -67,8 +70,9 @@ def downloader(url, dst_path=None):
                 data = response.read(1024)
                 sizeOfWritten += len(data)
                 f.write(data)
-                sys.stdout.write("@size: {0}\r"
-                                 .format(_fancy_bytes_format(sizeOfWritten)))
+                sys.stdout.write(
+                    "@size: {0}\r".format(_fancy_bytes_format(sizeOfWritten))
+                )
                 sys.stdout.flush()
 
             f.flush()

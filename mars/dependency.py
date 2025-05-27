@@ -16,6 +16,7 @@ import subprocess
 import shutil
 import logging
 import argparse
+import runpy
 
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,8 @@ def _fixer_download(dep_info):
     if dep_info.cache is None:
         d = downloader.Downloader(dep_info.src_path, dep_info.dst_dir)
         ret_file = d.start()
+        if ret_file == None:
+            return
         logger.info("dependency @name: {0} has been downloaded.".format(ret_file))
         dep_info.last_dep_method_ret = ret_file
         dep_info.dst_abs_path = os.path.abspath(ret_file)
@@ -109,17 +112,9 @@ def _fixer_fs_git_proj_download_method(dep_info):
         os.chdir(dep_name)
 
     if os.path.isfile("setup.py"):
-        os.sys.path.insert(0, os.getcwd())
-        # if setup.py has been imported, then rm from sys.modules temporarily
-        old_setup_module = os.sys.modules.pop("setup", None)
-
-        import setup as current_set_up
-
-        current_set_up.main()
-
-        # set old setup.py back into sys.modules
-        if old_setup_module is not None:
-            os.sys.modules["setup"] = old_setup_module
+        sys.path.insert(0, os.getcwd())
+        new_setup_py_path = os.path.join(os.getcwd(), "setup.py")
+        runpy.run_path(new_setup_py_path, run_name="__main__")
 
     if os.path.isfile("vesta/build.py"):
         # build a pkg tar file
@@ -192,14 +187,14 @@ class DepSolution:
             dm[1](dep_info)
 
     def add_method(self, dep_method):
-        self.__dep_methods.append(dep_method)
+        self.__dep_methods[dep_method["seq_num"]] = dep_method["fixer"]
 
 
 default_dep_sln = DepSolution(
     {"seq_num": 0, "fixer": _fixer_download}, {"seq_num": 1, "fixer": _fixer_extract}
 )
 
-default_dep_sln.add_method = None  # disable further adding method
+del default_dep_sln.add_method  # disable further adding method
 
 fs_git_proj_dep_sln = DepSolution(
     {"seq_num": 0, "fixer": _fixer_fs_git_proj_download_method},
@@ -211,7 +206,7 @@ fs_trivial_git_proj_dep_sln = DepSolution(
     {"seq_num": 1, "fixer": _fixer_copy},
 )
 
-fs_git_proj_dep_sln.add_method = None
+del fs_git_proj_dep_sln.add_method
 
 
 class Dependency:

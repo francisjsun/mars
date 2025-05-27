@@ -36,4 +36,4 @@ class AsyncDownloader(threading.Thread):
 
     def run(self):
         d = self.__Downloader
-        d.__downloader.start()
+        d.start()

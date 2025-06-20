@@ -17,7 +17,10 @@ import shutil
 import logging
 import argparse
 import runpy
+import zipfile
+import copy
 
+DEFAULT_DEP_DIR = "dep_tmp"
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +33,16 @@ arg_parser.add_argument(
 )
 args = arg_parser.parse_args()
 
+if args.local:
+    logger.warning("too dangerous! TODO")
+    exit()
+
 
 class DepInfo:
     def __init__(self, dep_info):
         self.src_path = dep_info["src_path"].strip()
         self.dst_dir = dep_info.get("dst_dir", None)
+        self.local_git_repo_dir = dep_info.get("local_git_repo_dir", None)
         self.seq_num = dep_info.get("seq_num", 0)
         self.last_dep_method_ret = None
         self.dst_abs_path = None
@@ -51,7 +59,7 @@ class DepInfo:
 
 def _fixer_download(dep_info):
     if dep_info.cache is None:
-        d = downloader.Downloader(dep_info.src_path, dep_info.dst_dir)
+        d = downloader.Downloader(dep_info.src_path, os.path.abspath(DEFAULT_DEP_DIR))
         ret_file = d.start()
         if ret_file == None:
             return
@@ -79,9 +87,12 @@ def _process_git_url(url):
 
 def _fixer_fs_git_proj_download_method(dep_info):
     old_cwd = os.getcwd()
-    if not os.path.isdir("dep_tmp"):
-        os.mkdir("dep_tmp")
-    os.chdir("dep_tmp")
+    local_git_repo_dir = DEFAULT_DEP_DIR
+    if dep_info.local_git_repo_dir != None:
+        local_git_repo_dir = dep_info.local_git_repo_dir
+    if not os.path.isdir(local_git_repo_dir):
+        os.mkdir(local_git_repo_dir)
+    os.chdir(local_git_repo_dir)
 
     src_path, rev, dep_name = _process_git_url(dep_info.src_path)
 
@@ -144,8 +155,8 @@ def _fixer_copy(dep_info):
 
 
 def _fixer_extract(dep_info):
-    tar_file_path = dep_info.last_dep_method_ret
-    if tar_file_path is None:
+    compressed_file_path = dep_info.last_dep_method_ret
+    if compressed_file_path is None:
         return
     if dep_info.dst_dir is None:
         dst_dir = os.getcwd()
@@ -155,24 +166,38 @@ def _fixer_extract(dep_info):
     if not os.path.isdir(dst_dir):
         os.makedirs(dst_dir)
 
-    if tarfile.is_tarfile(tar_file_path):
-        with tarfile.open(tar_file_path) as f:
-            old_cwd = os.getcwd()
-            os.chdir(dst_dir)
-            f.extractall()
-            os.chdir(old_cwd)
-            logger.info(
-                """\
-dependency @name: {0} has been extracted into @dst_dir: {1}.""".format(
-                    tar_file_path, dst_dir
+    if compressed_file_path.split(".")[-1] == "zip":
+        zip_file_path = compressed_file_path
+        if zipfile.is_zipfile(zip_file_path):
+            with zipfile.ZipFile(zip_file_path, "r") as zf:
+                zf.extractall(dst_dir)
+                logger.info(
+                    """\
+    dependency @name: {0} has been extracted into @dst_dir: {1}.""".format(
+                        zip_file_path, dst_dir
+                    )
                 )
-            )
     else:
-        raise
+        tar_file_path = compressed_file_path
+        if tarfile.is_tarfile(tar_file_path):
+            with tarfile.open(tar_file_path) as f:
+                old_cwd = os.getcwd()
+                os.chdir(dst_dir)
+                f.extractall()
+                os.chdir(old_cwd)
+                logger.info(
+                    """\
+    dependency @name: {0} has been extracted into @dst_dir: {1}.""".format(
+                        tar_file_path, dst_dir
+                    )
+                )
+        else:
+            raise
 
 
 class DepSolution:
-    def __init__(self, *dep_methods):
+    def __init__(self, *dep_methods, is_final=False):
+        self._is_final = is_final
         if dep_methods is None:
             raise
         self.__dep_methods = {}
@@ -187,26 +212,43 @@ class DepSolution:
             dm[1](dep_info)
 
     def add_method(self, dep_method):
+        if self._is_final:
+            logger.error("no more methods allowed")
+            return
         self.__dep_methods[dep_method["seq_num"]] = dep_method["fixer"]
+
+    def append_fixer(self, fixer):
+        max_seq_num = -1
+        for k, v in self.__dep_methods.items():
+            if max_seq_num < k:
+                max_seq_num = k
+        self.add_method({"seq_num": max_seq_num + 1, "fixer": fixer})
+
+    def deep_clone(self):
+        new_dep_sln = copy.deepcopy(self)
+        # make it able to add new method
+        new_dep_sln._is_final = False
+
+        return new_dep_sln
 
 
 default_dep_sln = DepSolution(
-    {"seq_num": 0, "fixer": _fixer_download}, {"seq_num": 1, "fixer": _fixer_extract}
+    {"seq_num": 0, "fixer": _fixer_download},
+    {"seq_num": 1, "fixer": _fixer_extract},
+    is_final=True,
 )
-
-del default_dep_sln.add_method  # disable further adding method
 
 fs_git_proj_dep_sln = DepSolution(
     {"seq_num": 0, "fixer": _fixer_fs_git_proj_download_method},
     {"seq_num": 1, "fixer": _fixer_extract},
+    is_final=True,
 )
 
 fs_trivial_git_proj_dep_sln = DepSolution(
     {"seq_num": 0, "fixer": _fixer_fs_git_proj_download_method},
     {"seq_num": 1, "fixer": _fixer_copy},
+    is_final=True,
 )
-
-del fs_git_proj_dep_sln.add_method
 
 
 class Dependency:

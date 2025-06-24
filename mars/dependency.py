@@ -20,13 +20,17 @@ import runpy
 import zipfile
 import copy
 
-DEFAULT_DEP_DIR = "dep_tmp"
+DEFAULT_DEP_DIR = "mars_dep_tmp"
 
 logger = logging.getLogger(__name__)
 
 arg_parser = argparse.ArgumentParser(description=__doc__)
 arg_parser.add_argument(
-    "-l", "--local", action="store_true", dest="local", help="Use local repository"
+    "-l",
+    "--local",
+    action="store_true",
+    dest="local",
+    help="Use local repository",
 )
 arg_parser.add_argument(
     "-d", "--dirty", action="store_true", dest="dirty", help="Use dirty local"
@@ -59,11 +63,15 @@ class DepInfo:
 
 def _fixer_download(dep_info):
     if dep_info.cache is None:
-        d = downloader.Downloader(dep_info.src_path, os.path.abspath(DEFAULT_DEP_DIR))
+        d = downloader.Downloader(
+            dep_info.src_path, os.path.abspath(DEFAULT_DEP_DIR)
+        )
         ret_file = d.start()
         if ret_file == None:
             return
-        logger.info("dependency @name: {0} has been downloaded.".format(ret_file))
+        logger.info(
+            "dependency @name: {0} has been downloaded.".format(ret_file)
+        )
         dep_info.last_dep_method_ret = ret_file
         dep_info.dst_abs_path = os.path.abspath(ret_file)
     else:
@@ -81,7 +89,9 @@ def _process_git_url(url):
 
     dep_name = src_path.split("/")[-1].split(".")[0]
     if dep_name is None or dep_name == "":
-        raise RuntimeError("dep_name is either None or empty @src_path: " + src_path)
+        raise RuntimeError(
+            "dep_name is either None or empty @src_path: " + src_path
+        )
     return src_path, rev, dep_name
 
 
@@ -115,11 +125,15 @@ def _fixer_fs_git_proj_download_method(dep_info):
         os.chdir(dep_name)  # cd to target dir
         if not args.dirty:  # want a clean version
             if not args.local:  # want update from remote
-                subprocess.run(["git", "fetch", "-f", "origin", "{0}".format(rev)])
+                subprocess.run(
+                    ["git", "fetch", "-f", "origin", "{0}".format(rev)]
+                )
             subprocess.run(["git", "reset", "--hard", "origin/" + rev])
     else:
         # clone git repository
-        subprocess.run(["git", "clone", "-b", rev, "--single-branch", src_path])
+        subprocess.run(
+            ["git", "clone", "-b", rev, "--single-branch", src_path]
+        )
         os.chdir(dep_name)
 
     if os.path.isfile("setup.py"):
@@ -166,33 +180,39 @@ def _fixer_extract(dep_info):
     if not os.path.isdir(dst_dir):
         os.makedirs(dst_dir)
 
-    if compressed_file_path.split(".")[-1] == "zip":
-        zip_file_path = compressed_file_path
-        if zipfile.is_zipfile(zip_file_path):
-            with zipfile.ZipFile(zip_file_path, "r") as zf:
-                zf.extractall(dst_dir)
-                logger.info(
-                    """\
-    dependency @name: {0} has been extracted into @dst_dir: {1}.""".format(
-                        zip_file_path, dst_dir
+    if os.path.isdir(compressed_file_path):
+        # TODO
+        pass
+    elif os.path.isfile(compressed_file_path):
+        if compressed_file_path.split(".")[-1] == "zip":
+            zip_file_path = compressed_file_path
+            if zipfile.is_zipfile(zip_file_path):
+                with zipfile.ZipFile(zip_file_path, "r") as zf:
+                    zf.extractall(dst_dir)
+                    logger.info(
+                        """\
+        dependency @name: {0} has been extracted into @dst_dir: {1}.""".format(
+                            zip_file_path, dst_dir
+                        )
                     )
-                )
-    else:
-        tar_file_path = compressed_file_path
-        if tarfile.is_tarfile(tar_file_path):
-            with tarfile.open(tar_file_path) as f:
-                old_cwd = os.getcwd()
-                os.chdir(dst_dir)
-                f.extractall()
-                os.chdir(old_cwd)
-                logger.info(
-                    """\
-    dependency @name: {0} has been extracted into @dst_dir: {1}.""".format(
-                        tar_file_path, dst_dir
-                    )
-                )
         else:
-            raise
+            tar_file_path = compressed_file_path
+            if tarfile.is_tarfile(tar_file_path):
+                with tarfile.open(tar_file_path) as f:
+                    old_cwd = os.getcwd()
+                    os.chdir(dst_dir)
+                    f.extractall()
+                    os.chdir(old_cwd)
+                    logger.info(
+                        """\
+        dependency @name: {0} has been extracted into @dst_dir: {1}.""".format(
+                            tar_file_path, dst_dir
+                        )
+                    )
+            else:
+                raise
+    else:
+        raise
 
 
 class DepSolution:
@@ -276,7 +296,9 @@ class Dependency:
 
             # if has been cached
             if current_src_path in Dependency.dep_info_cache:
-                current_dep_info.cache = Dependency.dep_info_cache[current_src_path]
+                current_dep_info.cache = Dependency.dep_info_cache[
+                    current_src_path
+                ]
 
             kv[1](current_dep_info)
 

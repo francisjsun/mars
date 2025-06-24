@@ -11,21 +11,13 @@ import runpy
 import sys
 import typing
 import enum
+from . import smart_list as sl
 
 logger = logging.getLogger(__name__)
 
 MMK_FILE_NAME = "mmk.py"  # mmk short for mars make
 
 ROOT_DIR = os.path.dirname(sys.argv[0])
-
-
-def _get_list(potential_list) -> list:
-    if potential_list is None:
-        return []
-    elif not isinstance(potential_list, list):
-        return [potential_list]
-    else:
-        return potential_list
 
 
 class Target:
@@ -37,14 +29,16 @@ class Target:
 
     def __init__(
         self,
+        *,
         type: Type = Type.EXE,
-        source: typing.Union[None, str, list[str]] = None,
+        source: sl.StrList = None,
         name: typing.Union[None, str] = None,
-        dependency_target: typing.Union[None, str, list[str]] = None,
-        include_dir: typing.Union[None, str, list[str]] = None,
-        link_lib: typing.Union[None, str, list[str]] = None,
-        link_lib_dir: typing.Union[None, str, list[str]] = None,
-        predefine: typing.Union[None, str, list[str]] = None,
+        dependency_target: sl.StrList = None,
+        include_dir: sl.StrList = None,
+        link_lib: sl.StrList = None,
+        link_lib_dir: sl.StrList = None,
+        predefine: sl.StrList = None,
+        output_dir: typing.Union[None, str] = None,
     ):
         """
         type:str [exe, static_lib, shared_lib],
@@ -55,36 +49,51 @@ class Target:
         self._type = type
 
         self._source_in_full_path = []
-        self.add_source(_get_list(source))
+        self.add_source(sl.get_list(source))
 
         self._name = name
 
-        self._dependency_target = _get_list(dependency_target)
+        self._dependency_target = sl.get_list(dependency_target)
 
-        self._include_dir = _get_list(include_dir)
+        self._include_dir = sl.get_list(include_dir)
 
-        self._link_lib = _get_list(link_lib)
+        self._link_lib = sl.get_list(link_lib)
 
-        self._link_lib_dir = _get_list(link_lib_dir)
+        self._link_lib_dir = sl.get_list(link_lib_dir)
 
-        self._predefine = _get_list(predefine)
+        self._predefine = sl.get_list(predefine)
 
         self._cmake_target_generated = False
 
-    def add_source(self, source: typing.Union[str, list[str]]):
-        if isinstance(source, str):
-            self._source_in_full_path.append(
-                os.path.join(Project.get_current_dir(), source)
-            )
-        elif isinstance(source, list):
-            for s in source:
-                self.add_source(s)
-        else:
-            logger.error(f"unknown type of source: {type(source)}")
+        self._output_dir = output_dir
 
-    def generate_cmake_target(self, project):
+    def add_source(self, source: sl.StrList):
+        self._source_in_full_path.extend(
+            [
+                os.path.join(Project.get_current_dir(), fp_s)
+                for fp_s in sl.get_list(source)
+            ]
+        )
+
+    def add_dependency_target(self, dependency_target: sl.StrList):
+        self._dependency_target.extend(sl.get_list(dependency_target))
+
+    def add_include_dir(self, include_dir: sl.StrList):
+        self._include_dir.extend(sl.get_list(include_dir))
+
+    def add_link_lib(self, link_lib: sl.StrList):
+        self._link_lib.extend(sl.get_list(link_lib))
+
+    def add_lib_lib_dir(self, link_lib_dir: sl.StrList):
+        self._link_lib_dir.extend(sl.get_list(link_lib_dir))
+
+    def add_predefine(self, predefine: sl.StrList):
+        self._predefine.extend(sl.get_list(predefine))
+
+    def generate_cmake_target(self, project: "Project"):
         if self._name is None:
-            self._name = project._project_name
+            logger.error("target name not being set")
+            return
 
         if self._type == Target.Type.EXE:
             cmk.add_executable(self._name, self._source_in_full_path)
@@ -115,54 +124,96 @@ class Target:
             cpp_additional_compiler_options = "/WX /Zc:preprocessor"
 
         cmk.target_compile_options(
-            self._name, cmk.PRIVATE, cpp_additional_compiler_options
+            self._name, cmk.PRIVATE, cpp_additional_compiler_options.split(" ")
         )
 
         if len(self._include_dir) > 0:
-            cmk.target_include_directories(self._name, self._include_dir)
+            cmk.target_include_directories(
+                self._name, cmk.PRIVATE, self._include_dir
+            )
 
         if len(self._link_lib_dir) > 0:
-            cmk.target_link_directories(self._name, self._link_lib_dir)
+            cmk.target_link_directories(
+                self._name, cmk.PRIVATE, self._link_lib_dir
+            )
 
         if len(self._link_lib) > 0:
-            cmk.target_link_directories(self._name, self._link_lib)
+            cmk.target_link_libraries(self._name, cmk.PRIVATE, self._link_lib)
 
         if len(self._predefine) > 0:
-            cmk.target_compile_definitions(self._name, self._predefine)
+            cmk.target_compile_definitions(
+                self._name, cmk.PRIVATE, self._predefine
+            )
 
         if len(self._dependency_target) > 0:
-            cmk.target_link_libraries(self._name, self._dependency_target)
+            cmk.target_link_libraries(
+                self._name, cmk.PRIVATE, self._dependency_target
+            )
             cmk.add_dependencies(self._name, self._dependency_target)
+
+        if self._output_dir is None:
+            self._output_dir = project._output_dir
+
+        cmk.set_target_properties(
+            self._name,
+            cmk.PROPERTIES,
+            cmk.ARCHIVE_OUTPUT_DIRECTORY,
+            self._output_dir,
+            cmk.LIBRARY_OUTPUT_DIRECTORY,
+            self._output_dir,
+            cmk.RUNTIME_OUTPUT_DIRECTORY,
+            self._output_dir,
+            cmk.DEBUG_POSTFIX,
+            project._bin_debug_postfix,
+        )
 
         self._cmake_target_generated = True
 
 
+_DEFAULT_CPP_VERSION = "20"
+
+
+def _get_pycmake_language(language: str):
+    pycmake_language = None
+    if language == "cpp":
+        pycmake_language = cmk.CXX
+    elif language == "swift":
+        pycmake_language = cmk.SWIFT
+    elif language == "objcxx":
+        pycmake_language = cmk.OBJCXX
+
+    return pycmake_language
+
+
+def _get_default_cpp_compiler():
+    sys_name = platform.system()
+    cpp_compiler = "clang"
+    if sys_name == "Windows":
+        cpp_compiler = "msvc"
+    elif sys_name == "Linux":
+        cpp_compiler = "gcc"
+    return cpp_compiler
+
+
+DEFAULT_OUTPUT_DIR = "bin"
+BIN_DEBUG_POSTFIX = "d"
+
+
 class Project:
-    DEFAULT_CPP_VERSION = "20"
 
-    @staticmethod
-    def get_pycmake_language(language: str):
-        pycmake_language = None
-        if language == "cpp":
-            pycmake_language = cmk.CXX
-        elif language == "swift":
-            pycmake_language = cmk.SWIFT
-        elif language == "objcxx":
-            pycmake_language = cmk.OBJCXX
-
-        return pycmake_language
-
-    @staticmethod
-    def get_default_cpp_compiler():
-        sys_name = platform.system()
-        cpp_compiler = "clang"
-        if sys_name == "Windows":
-            cpp_compiler = "msvc"
-        elif sys_name == "Linux":
-            cpp_compiler = "gcc"
-        return cpp_compiler
-
-    def __init__(self, project_name, **kwargs) -> None:
+    def __init__(
+        self,
+        project_name: str,
+        *,
+        cmake_version: typing.Union[str, None] = None,
+        cpp_version: str = _DEFAULT_CPP_VERSION,
+        language: sl.StrList = "cpp",
+        project_version: str = "0.1.0",
+        cpp_compiler: str = _get_default_cpp_compiler(),
+        target: typing.Union[Target, None] = None,
+        output_dir: str = DEFAULT_OUTPUT_DIR,
+        bin_debug_postfix: str = BIN_DEBUG_POSTFIX,
+    ) -> None:
         """
         kwargs consists of cmake_version,
         cpp_version: i.e. 20,
@@ -175,7 +226,6 @@ class Project:
         Project._project_stack.append(self)
 
         self._project_name = project_name
-        cmake_version = kwargs.get("cmake_version")
         if cmake_version is None:
             # use cmake --version
             ret_int, ret_str = misc.run_cmd("cmake --version")
@@ -191,26 +241,27 @@ class Project:
 
         self._cmake_version = cmake_version
 
-        self._cpp_version = kwargs.get(
-            "cpp_version", Project.DEFAULT_CPP_VERSION
-        )
+        self._cpp_version = cpp_version
 
-        language = kwargs.get("language", ["cpp"])
-        self._language = [Project.get_pycmake_language(l) for l in language]
+        self._language = [
+            _get_pycmake_language(l) for l in sl.get_list(language)
+        ]
 
-        self._project_version = kwargs.get("project_version", "0.1.0")
+        self._project_version = project_version
 
-        self._cpp_compiler = kwargs.get(
-            "cpp_compiler", Project.get_default_cpp_compiler()
-        )
+        self._cpp_compiler = cpp_compiler
 
         self._target = dict()
-        if "target" in kwargs:
-            target = kwargs.get("target")
-            if target is not None:
-                if target._name is None:
-                    target._name = self._project_name
-                self._target[target._name] = target
+        if target is not None:
+            if target._name is None:
+                # main project could share the same name of project
+                # if the name not provided
+                target._name = self._project_name
+            self._target[target._name] = target
+
+        self._output_dir = os.path.join(ROOT_DIR, output_dir)
+
+        self._bin_debug_postfix = bin_debug_postfix
 
     def add_target(self, target: Target):
         target_name = target._name

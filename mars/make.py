@@ -1,5 +1,5 @@
 __doc__ = """
-convenient wrapper for pycmake
+mars make, a.k.a. mmk
 """
 import pycmake.cmake as cmk
 from . import misc
@@ -12,12 +12,45 @@ import sys
 import typing
 import enum
 from . import smart_list as sl
+import argparse
+from . import package
+import shutil
 
 logger = logging.getLogger(__name__)
 
 MMK_FILE_NAME = "mmk.py"  # mmk short for mars make
 
-ROOT_DIR = os.path.dirname(sys.argv[0])
+ROOT_DIR = os.path.abspath(os.path.dirname(sys.argv[0]))
+
+arg_parser = argparse.ArgumentParser(description=__doc__)
+
+# arg_parser.add_argument(
+#     "-b",
+#     "--build",
+#     action="store",
+#     dest="build_type",
+#     default=None,
+#     help="build and specify the build type",
+# )
+#
+# arg_parser.add_argument(
+#     "-t",
+#     "--target",
+#     action="store",
+#     dest="target",
+#     default=None,
+#     help="specify build target",
+# )
+
+arg_parser.add_argument(
+    "-p",
+    "--package",
+    dest="package_type",
+    default=None,
+    help="package and specify packaging type: [folder|tar|zip]. i.e. -p tar",
+)
+
+args = arg_parser.parse_args()
 
 
 class Target:
@@ -39,6 +72,7 @@ class Target:
         link_lib_dir: sl.StrList = None,
         predefine: sl.StrList = None,
         output_dir: typing.Union[None, str] = None,
+        package_header_dir_hint: typing.Union[None, str] = None,
     ):
         """
         type:str [exe, static_lib, shared_lib],
@@ -66,6 +100,8 @@ class Target:
         self._cmake_target_generated = False
 
         self._output_dir = output_dir
+
+        self._package_header_dir_hint = package_header_dir_hint
 
     def add_source(self, source: sl.StrList):
         self._source_in_full_path.extend(
@@ -169,6 +205,31 @@ class Target:
 
         self._cmake_target_generated = True
 
+    def build(self, build_type: str):
+        if os.path.isdir("build"):
+            shutil.rmtree("build")
+        ret, _ = misc.run_cmd(
+            f"cmake -DCMAKE_BUILD_TYPE={build_type} -S . -B build"
+        )
+        if ret == 0:
+            ret, _ = misc.run_cmd(f"cmake --build build --target {self._name}")
+
+        return ret
+
+    def package(self, package_type: str):
+        if (
+            self._name is not None
+            and self._package_header_dir_hint is not None
+            and self._output_dir is not None
+        ):
+            package.pkg(
+                pkg_dir=ROOT_DIR,
+                pkg_name=self._name,
+                include_dir=self._package_header_dir_hint,
+                lib_dir=self._output_dir,
+                pkg_type=package.PkgType.get_type(package_type),
+            )
+
 
 _DEFAULT_CPP_VERSION = "20"
 
@@ -228,7 +289,9 @@ class Project:
         self._project_name = project_name
         if cmake_version is None:
             # use cmake --version
-            ret_int, ret_str = misc.run_cmd("cmake --version")
+            ret_int, ret_str = misc.run_cmd(
+                "cmake --version", capture_output=True
+            )
             if ret_int == 0:
                 ret_ws = ret_str.split(" ")
                 ver = re.search(r"[0-9]+\.[0-9]+\.[0-9]+", ret_str)
@@ -251,7 +314,7 @@ class Project:
 
         self._cpp_compiler = cpp_compiler
 
-        self._target = dict()
+        self._target: dict[str, Target] = dict()
         if target is not None:
             if target._name is None:
                 # main project could share the same name of project
@@ -339,3 +402,12 @@ class Project:
                 else:
                     t.generate_cmake_target(self)
                     count_of_target_generated += 1
+
+        # package
+        if args.package_type != None:
+            for t in self._target.values():
+                if t._package_header_dir_hint is not None:
+                    t.build("debug")
+                    t.build("release")
+
+                    t.package(args.package_type)

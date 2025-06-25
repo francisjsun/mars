@@ -2,8 +2,9 @@ import os
 import logging
 import re
 import subprocess
+import shutil
 
-_logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def find_files_in_dir_with_extensions(
@@ -19,15 +20,17 @@ def find_files_in_dir_with_extensions(
     ret_files = []
 
     if not isinstance(dir, str):
-        _logger.error("dir must be a str")
+        logger.error("dir must be a str")
         return ret_files
 
     if not isinstance(extensions, list) and not isinstance(extensions, str):
-        _logger.error("extensions must be either a list or str")
+        logger.error("extensions must be either a list or str")
         return ret_files
 
-    if not isinstance(excluding_dirs, list) and not isinstance(excluding_dirs, str):
-        _logger.error("excluding_dirs must be either a list or str")
+    if not isinstance(excluding_dirs, list) and not isinstance(
+        excluding_dirs, str
+    ):
+        logger.error("excluding_dirs must be either a list or str")
         return ret_files
 
     if not isinstance(extensions, list):
@@ -80,14 +83,34 @@ def find_files_in_dir_with_extensions(
     return ret_files
 
 
-def run_cmd(cmd):
+def run_cmd(cmd, capture_output: bool = False):
     lst_cmd = cmd
     if isinstance(cmd, str):
         lst_cmd = cmd.split(" ")
     elif isinstance(cmd, list):
         lst_cmd = cmd
     else:
-        _logger.error(f"wrong type of cmd {type(cmd)}")
+        logger.error(f"wrong type of cmd {type(cmd)}")
 
-    ret = subprocess.run(lst_cmd, capture_output=True, text=True)
-    return ret.returncode, ret.stdout[:-1] if ret.stdout[-1] == "\n" else ret.stdout
+    ret = subprocess.run(
+        lst_cmd, capture_output=capture_output, text=capture_output
+    )
+    return ret.returncode, (
+        ret.stdout[:-1]
+        if ret.stdout is not None and ret.stdout[-1] == "\n"
+        else ret.stdout
+    )
+
+
+def copy_file_with_dir_structure(
+    src_file: str, src_dir_start: str, dst_dir_start: str
+):
+    h_dir = os.path.dirname(src_file)
+    intermediate_dir = os.path.relpath(h_dir, src_dir_start)
+    dst_dir = os.path.join(dst_dir_start, intermediate_dir)
+    if not os.path.isdir(dst_dir):
+        if os.path.isfile(dst_dir):
+            logger.error(f"dst_dir is a file: {dst_dir}")
+            return
+        os.makedirs(dst_dir)
+    shutil.copy(src_file, dst_dir)

@@ -19,10 +19,18 @@ import argparse
 import runpy
 import zipfile
 import copy
+from . import misc
 
 DEFAULT_DEP_DIR = "mars_dep_tmp"
 
 logger = logging.getLogger(__name__)
+
+if os.path.isfile(DEFAULT_DEP_DIR):
+    logger.error(f"{DEFAULT_DEP_DIR} is file")
+    raise
+
+if not os.path.isdir(DEFAULT_DEP_DIR):
+    os.makedirs(DEFAULT_DEP_DIR)
 
 arg_parser = argparse.ArgumentParser(description=__doc__)
 arg_parser.add_argument(
@@ -141,7 +149,15 @@ def _fixer_fs_git_proj_download_method(dep_info):
         new_setup_py_path = os.path.join(os.getcwd(), "setup.py")
         runpy.run_path(new_setup_py_path, run_name="__main__")
 
-    if os.path.isfile("vesta/build.py"):
+    if os.path.isfile("mmk.py"):
+        misc.run_cmd(f"{sys.executable} mmk.py -p folder")
+        # set last_dep_method_ret for next step
+        # -p folder will package the project in the root dir
+        dep_info.last_dep_method_ret = os.path.abspath(dep_name)
+        # append dep_name to dst_dir, i.e. external/sun
+        dep_info.dst_dir = os.path.join(dep_info.dst_dir, dep_name)
+
+    elif os.path.isfile("vesta/build.py"):
         # build a pkg tar file
         shutil.copy("vesta/build.py", ".")
         subprocess.run([sys.executable, "build.py", "-p"])
@@ -180,9 +196,6 @@ def _fixer_extract(dep_info):
     if not os.path.isdir(dst_dir):
         os.makedirs(dst_dir)
 
-    if os.path.isdir(compressed_file_path):
-        # TODO
-        pass
     elif os.path.isfile(compressed_file_path):
         if compressed_file_path.split(".")[-1] == "zip":
             zip_file_path = compressed_file_path
@@ -190,8 +203,7 @@ def _fixer_extract(dep_info):
                 with zipfile.ZipFile(zip_file_path, "r") as zf:
                     zf.extractall(dst_dir)
                     logger.info(
-                        """\
-        dependency @name: {0} has been extracted into @dst_dir: {1}.""".format(
+                        "dependency @name: {0} has been extracted into @dst_dir: {1}.".format(
                             zip_file_path, dst_dir
                         )
                     )
@@ -210,6 +222,9 @@ def _fixer_extract(dep_info):
                         )
                     )
             else:
+                logger.error(
+                    f"unknown type of compressed file: {compressed_file_path}"
+                )
                 raise
     else:
         raise
@@ -260,15 +275,15 @@ default_dep_sln = DepSolution(
 
 fs_git_proj_dep_sln = DepSolution(
     {"seq_num": 0, "fixer": _fixer_fs_git_proj_download_method},
-    {"seq_num": 1, "fixer": _fixer_extract},
-    is_final=True,
-)
-
-fs_trivial_git_proj_dep_sln = DepSolution(
-    {"seq_num": 0, "fixer": _fixer_fs_git_proj_download_method},
     {"seq_num": 1, "fixer": _fixer_copy},
     is_final=True,
 )
+
+# fs_trivial_git_proj_dep_sln = DepSolution(
+#     {"seq_num": 0, "fixer": _fixer_fs_git_proj_download_method},
+#     {"seq_num": 1, "fixer": _fixer_copy},
+#     is_final=True,
+# )
 
 
 class Dependency:

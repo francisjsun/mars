@@ -6,6 +6,7 @@ import enum
 from . import smart_list as sl
 import os
 import logging
+import typing
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,9 @@ def pkg(
     pkg_dir: str,
     pkg_name: str,
     include_dir: str,
-    lib_dir: str,
+    lib_dir: typing.Union[
+        None, str
+    ],  # lib_dir could be None when it's a HEADER_ONLY target
     pkg_type: PkgType = PkgType.FLODER,
 ):
 
@@ -53,22 +56,25 @@ def pkg(
     if os.path.isdir(pkg_dir):
         shutil.rmtree(pkg_dir)
 
-    os.mkdir(pkg_dir)
+    os.makedirs(pkg_dir)
 
     # copy files to pkg_dir
     header = misc.find_files_in_dir_with_extensions(include_dir, HEADER_EXT)
-    lib = misc.find_files_in_dir_with_extensions(lib_dir, LIB_EXT)
+    lib = []
+    if lib_dir is not None:
+        lib = misc.find_files_in_dir_with_extensions(lib_dir, LIB_EXT)
 
-    # copy fiiles to pkg_dir
-    dst_header_dir = os.path.join(pkg_dir, "include")
+    # copy fiiles to pkg_dir, note! header dir should also contain the pkg_name at the end
+    dst_header_dir = os.path.join(pkg_dir, "include", pkg_name)
     for h in header:
         logger.info(f"copying {h}")
         misc.copy_file_with_dir_structure(h, include_dir, dst_header_dir)
 
-    dst_lib_dir = os.path.join(pkg_dir, "lib")
-    for l in lib:
-        logger.info(f"copying {l}")
-        misc.copy_file_with_dir_structure(l, lib_dir, dst_lib_dir)
+    if lib_dir is not None:
+        dst_lib_dir = os.path.join(pkg_dir, "lib")
+        for l in lib:
+            logger.info(f"copying {l}")
+            misc.copy_file_with_dir_structure(l, lib_dir, dst_lib_dir)
 
     # if PkgType not folder, continue
     if pkg_type != PkgType.FLODER:
@@ -90,4 +96,6 @@ def pkg(
                 # TODO
                 pass
 
-    logger.info(f"end of packaging: {pkg_name}")
+    logger.info(
+        f"end of packaging: {os.path.abspath(os.path.join(pkg_dir, pkg_name))}"
+    )

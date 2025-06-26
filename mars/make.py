@@ -20,7 +20,9 @@ logger = logging.getLogger(__name__)
 
 MMK_FILE_NAME = "mmk.py"  # mmk short for mars make
 
-ROOT_DIR = os.path.abspath(os.path.dirname(sys.argv[0]))
+_ROOT_DIR = os.path.abspath(os.path.dirname(sys.argv[0]))
+
+_DEFAULT_PACKAGE_DIR_NAME = "."  # TODO "mars_pkg"
 
 arg_parser = argparse.ArgumentParser(description=__doc__)
 
@@ -56,21 +58,29 @@ args = arg_parser.parse_args()
 class Target:
     class Type(enum.Enum):
         INVALID = 0
-        EXE = 1
-        STATIC_LIB = 2
-        SHARED_LIB = 3
+        HEADER_ONLY = 1
+        EXE = 2
+        STATIC_LIB = 3
+        SHARED_LIB = 4
+
+    class SubType(enum.Enum):
+        INVALID = 0
+        WIN32 = 1
+        MACOSX_BUNDLE = 2
 
     def __init__(
         self,
         *,
-        type: Type = Type.EXE,
-        source: sl.StrList = None,
         name: typing.Union[None, str] = None,
+        type: Type = Type.EXE,
+        sub_type: typing.Union[SubType, None] = None,
+        source: sl.StrList = None,
         dependency_target: sl.StrList = None,
         include_dir: sl.StrList = None,
         link_lib: sl.StrList = None,
         link_lib_dir: sl.StrList = None,
         predefine: sl.StrList = None,
+        compile_option: sl.StrList = None,
         output_dir: typing.Union[None, str] = None,
         package_header_dir_hint: typing.Union[None, str] = None,
     ):
@@ -81,6 +91,8 @@ class Target:
         dependency_target_name: list of dependency target names
         """
         self._type = type
+
+        self._sub_type = sub_type
 
         self._source_in_full_path = []
         self.add_source(sl.get_list(source))
@@ -97,6 +109,8 @@ class Target:
 
         self._predefine = sl.get_list(predefine)
 
+        self._compile_option = sl.get_list(compile_option)
+
         self._cmake_target_generated = False
 
         self._output_dir = output_dir
@@ -106,7 +120,7 @@ class Target:
     def add_source(self, source: sl.StrList):
         self._source_in_full_path.extend(
             [
-                os.path.join(Project.get_current_dir(), fp_s)
+                os.path.join(Project.get_project().get_current_mmk_dir(), fp_s)
                 for fp_s in sl.get_list(source)
             ]
         )
@@ -120,19 +134,38 @@ class Target:
     def add_link_lib(self, link_lib: sl.StrList):
         self._link_lib.extend(sl.get_list(link_lib))
 
-    def add_lib_lib_dir(self, link_lib_dir: sl.StrList):
+    def add_link_lib_dir(self, link_lib_dir: sl.StrList):
         self._link_lib_dir.extend(sl.get_list(link_lib_dir))
 
     def add_predefine(self, predefine: sl.StrList):
         self._predefine.extend(sl.get_list(predefine))
 
-    def generate_cmake_target(self, project: "Project"):
+    def add_compile_option(self, compile_option: sl.StrList):
+        self._compile_option.extend(sl.get_list(compile_option))
+
+    def generate_cmake_target(self):
+        if self._type == Target.Type.HEADER_ONLY:
+            return
         if self._name is None:
             logger.error("target name not being set")
             return
 
         if self._type == Target.Type.EXE:
-            cmk.add_executable(self._name, self._source_in_full_path)
+            if self._sub_type is None:
+                cmk.add_executable(self._name, self._source_in_full_path)
+            elif self._sub_type == Target.SubType.WIN32:
+                cmk.add_executable(
+                    self._name, cmk.WIN32, self._source_in_full_path
+                )
+            elif self._sub_type == Target.SubType.MACOSX_BUNDLE:
+                cmk.add_executable(
+                    self._name, cmk.MACOSX_BUNDLE, self._source_in_full_path
+                )
+            else:
+                logger.error(
+                    f"unknown subtype: {self._sub_type} for target: {self._name}"
+                )
+                raise
         else:
             cmk.add_library(
                 self._name,
@@ -145,23 +178,6 @@ class Target:
                     self._source_in_full_path,
                 ),
             )
-
-        cpp_version_compiler_option = "-std=c++" + project._cpp_version
-        if project._cpp_compiler == "msvc":
-            cpp_version_compiler_option = "/std:c++" + project._cpp_version
-        cmk.target_compile_options(
-            self._name, cmk.PRIVATE, cpp_version_compiler_option
-        )
-
-        cpp_additional_compiler_options = (
-            "-Wall -Wextra -Wconversion -pedantic"
-        )
-        if project._cpp_compiler == "msvc":
-            cpp_additional_compiler_options = "/WX /Zc:preprocessor"
-
-        cmk.target_compile_options(
-            self._name, cmk.PRIVATE, cpp_additional_compiler_options.split(" ")
-        )
 
         if len(self._include_dir) > 0:
             cmk.target_include_directories(
@@ -181,14 +197,20 @@ class Target:
                 self._name, cmk.PRIVATE, self._predefine
             )
 
+        if len(self._compile_option) > 0:
+            cmk.target_compile_options(
+                self._name, cmk.PRIVATE, self._compile_option
+            )
+
         if len(self._dependency_target) > 0:
             cmk.target_link_libraries(
                 self._name, cmk.PRIVATE, self._dependency_target
             )
             cmk.add_dependencies(self._name, self._dependency_target)
 
+        proj = Project.get_project()
         if self._output_dir is None:
-            self._output_dir = project._output_dir
+            self._output_dir = proj._output_dir
 
         cmk.set_target_properties(
             self._name,
@@ -200,30 +222,35 @@ class Target:
             cmk.RUNTIME_OUTPUT_DIRECTORY,
             self._output_dir,
             cmk.DEBUG_POSTFIX,
-            project._bin_debug_postfix,
+            proj._bin_debug_postfix,
         )
 
         self._cmake_target_generated = True
 
     def build(self, build_type: str):
-        if os.path.isdir("build"):
-            shutil.rmtree("build")
-        ret, _ = misc.run_cmd(
-            f"cmake -DCMAKE_BUILD_TYPE={build_type} -S . -B build"
-        )
-        if ret == 0:
-            ret, _ = misc.run_cmd(f"cmake --build build --target {self._name}")
+        if self._type != Target.Type.HEADER_ONLY:
+            if os.path.isdir("build"):
+                shutil.rmtree("build")
+            ret, _ = misc.run_cmd(
+                f"cmake -DCMAKE_BUILD_TYPE={build_type} -S . -B build"
+            )
+            if ret == 0:
+                ret, _ = misc.run_cmd(
+                    f"cmake --build build --target {self._name}"
+                )
 
-        return ret
+            return ret
 
     def package(self, package_type: str):
         if (
             self._name is not None
             and self._package_header_dir_hint is not None
-            and self._output_dir is not None
         ):
             package.pkg(
-                pkg_dir=ROOT_DIR,
+                pkg_dir=os.path.join(
+                    Project.get_project().get_project_dir(),
+                    _DEFAULT_PACKAGE_DIR_NAME,
+                ),
                 pkg_name=self._name,
                 include_dir=self._package_header_dir_hint,
                 lib_dir=self._output_dir,
@@ -261,6 +288,11 @@ BIN_DEBUG_POSTFIX = "d"
 
 
 class Project:
+    """
+    each mmk can only have one Project
+    """
+
+    _THE_PROJECT = None
 
     def __init__(
         self,
@@ -274,6 +306,8 @@ class Project:
         target: typing.Union[Target, None] = None,
         output_dir: str = DEFAULT_OUTPUT_DIR,
         bin_debug_postfix: str = BIN_DEBUG_POSTFIX,
+        compile_option: sl.StrList = None,
+        use_preset_compile_option: bool = True,
     ) -> None:
         """
         kwargs consists of cmake_version,
@@ -284,7 +318,14 @@ class Project:
         target
         """
 
-        Project._project_stack.append(self)
+        if Project._THE_PROJECT is None:
+            Project._THE_PROJECT = self
+        else:
+            logger.error("the project has been created, cannot create more")
+            raise
+
+        self._current_mmk_dir_stack = [_ROOT_DIR]
+        self._project_dir = _ROOT_DIR
 
         self._project_name = project_name
         if cmake_version is None:
@@ -322,9 +363,13 @@ class Project:
                 target._name = self._project_name
             self._target[target._name] = target
 
-        self._output_dir = os.path.join(ROOT_DIR, output_dir)
+        self._output_dir = os.path.join(self._project_dir, output_dir)
 
         self._bin_debug_postfix = bin_debug_postfix
+
+        self._compile_option = sl.get_list(compile_option)
+
+        self._use_preset_compile_option = use_preset_compile_option
 
     def add_target(self, target: Target):
         target_name = target._name
@@ -337,37 +382,37 @@ class Project:
 
         return target
 
-    def get_target(self, target_name: str) -> typing.Union[Target, None]:
+    def get_target(self, target_name: str) -> Target:
         if target_name in self._target:
             return self._target[target_name]
         else:
             logger.error(
                 f"no specified target found in project: {self._project_name}, target_name: {target_name}"
             )
-            return None
-
-    _project_stack = []
+            raise
 
     @classmethod
     def get_project(cls) -> "Project":
-        return cls._project_stack[-1]
+        if cls._THE_PROJECT is not None:
+            return cls._THE_PROJECT
+        else:
+            logger.error("the project has not been created yet")
+            raise
 
-    _current_dir_stack = [ROOT_DIR]
+    def get_current_mmk_dir(self):
+        return self._current_mmk_dir_stack[-1]
 
-    @classmethod
-    def get_current_dir(cls):
-        return cls._current_dir_stack[-1]
+    def get_project_dir(self):
+        return self._project_dir
 
     def add_sub_dir(self, sub_dir: str):
-        cur_dir = os.path.join(Project.get_current_dir(), sub_dir)
+        cur_dir = os.path.join(self.get_current_mmk_dir(), sub_dir)
         mmk_path = os.path.join(cur_dir, MMK_FILE_NAME)
         if os.path.isfile(mmk_path):
 
-            Project._project_stack.append(self)
-            Project._current_dir_stack.append(os.path.join(cur_dir))
+            self._current_mmk_dir_stack.append(os.path.join(cur_dir))
             runpy.run_path(mmk_path)
-            Project._project_stack.pop()
-            Project._current_dir_stack.pop()
+            self._current_mmk_dir_stack.pop()
 
         else:
             logger.error(f"no mmk.py found in specified sub_dir: {sub_dir}")
@@ -380,6 +425,26 @@ class Project:
             self._project_version,
             cmk.LANGUAGES,
             self._language,
+        )
+
+        # CMAKE_CXX_FLAGS IS a cmake variable which is a string, not like target_compile_options
+        proj_compile_option = " ".join(self._compile_option)
+
+        cpp_version_compile_option = "-std=c++" + self._cpp_version
+        if self._cpp_compiler == "msvc":
+            cpp_version_compile_option = "/std:c++" + self._cpp_version
+        proj_compile_option += " " + cpp_version_compile_option
+
+        if self._use_preset_compile_option:
+
+            prefix_compile_option = "-Wall -Wextra -Wconversion -pedantic"
+            if self._cpp_compiler == "msvc":
+                prefix_compile_option = "/WX /Zc:preprocessor"
+
+            proj_compile_option += " " + prefix_compile_option
+
+        cmk.cmake_set(
+            cmk.CMAKE_CXX_FLAGS, "${CMAKE_CXX_FLAGS}" + proj_compile_option
         )
 
         # add cmake target according to topological order of dependency graph
@@ -400,7 +465,7 @@ class Project:
                     # continue to try next one
                     continue
                 else:
-                    t.generate_cmake_target(self)
+                    t.generate_cmake_target()
                     count_of_target_generated += 1
 
         # package

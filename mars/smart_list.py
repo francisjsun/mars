@@ -3,6 +3,7 @@ import typing
 T = typing.TypeVar("T")
 SmartList = typing.Union[None, T, list[T]]
 StrList = SmartList[str]
+PairList = SmartList[typing.Tuple[T, T]]
 
 
 def get_list(param_list) -> list:

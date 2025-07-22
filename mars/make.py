@@ -26,23 +26,67 @@ _DEFAULT_PACKAGE_DIR_NAME = "."  # TODO "mars_pkg"
 
 arg_parser = argparse.ArgumentParser(description=__doc__)
 
-# arg_parser.add_argument(
-#     "-b",
-#     "--build",
-#     action="store",
-#     dest="build_type",
-#     default=None,
-#     help="build and specify the build type",
-# )
-#
-# arg_parser.add_argument(
-#     "-t",
-#     "--target",
-#     action="store",
-#     dest="target",
-#     default=None,
-#     help="specify build target",
-# )
+
+class TargetOS(enum.Enum):
+    INVALID = 0
+    MACOS = 1
+    IOS = 2
+    WIN = 3
+    ANDROID = 4
+    LINUX = 5
+    IOS_SIMULATOR = 6
+
+    @classmethod
+    def from_str(cls, os_name: str):
+        if os_name == "macos" or os_name == "Darwin":
+            return cls.MACOS
+        elif os_name == "ios":
+            return cls.IOS
+        elif os_name == "ios-sim":
+            return cls.IOS_SIMULATOR
+        elif os_name == "win" or os_name == "Windows":
+            return cls.WIN
+        elif os_name == "android":
+            return cls.ANDROID
+        elif os_name == "linux" or os_name == "Linux":
+            return cls.LINUX
+        else:
+            logger.error(f"unknown os_name: {os_name}")
+            raise
+
+    def is_apple_os(self):
+        return (
+            self == TargetOS.MACOS
+            or self == TargetOS.IOS
+            or self == TargetOS.IOS_SIMULATOR
+        )
+
+    def get_apple_sdk_name(self):
+        return {
+            TargetOS.MACOS: "macosx",
+            TargetOS.IOS: "iphoneos",
+            TargetOS.IOS_SIMULATOR: "iphonesimulator",
+        }[self]
+
+    def __str__(self):
+        return {
+            TargetOS.MACOS: "macos",
+            TargetOS.IOS: "ios",
+            TargetOS.WIN: "win",
+            TargetOS.ANDROID: "android",
+            TargetOS.LINUX: "linux",
+            TargetOS.IOS_SIMULATOR: "ios-sim",
+        }[self]
+
+
+arg_parser.add_argument(
+    "-t",
+    "--target-os",
+    action="store",
+    dest="target_os",
+    default=platform.system(),
+    help="specify build target, must be one of [macos, ios, win, android, linux, ios-sim]",
+)
 
 arg_parser.add_argument(
     "-p",
@@ -53,6 +97,24 @@ arg_parser.add_argument(
 )
 
 args = arg_parser.parse_args()
+
+
+def get_target_os() -> TargetOS:
+    return TargetOS.from_str(args.target_os)
+
+
+def get_apple_sdk_dir() -> str:
+    if get_target_os().is_apple_os():
+        return_code, apple_sdk_dir = misc.run_cmd(
+            f"xcrun --sdk {get_target_os().get_apple_sdk_name()} --show-sdk-path",
+            capture_output=True,
+        )
+        if return_code != 0:
+            logger.error("failed to find apple sdk path")
+            raise
+        return apple_sdk_dir
+    else:
+        raise
 
 
 class Target:
@@ -77,11 +139,14 @@ class Target:
         source: sl.StrList = None,
         dependency_target: sl.StrList = None,
         include_dir: sl.StrList = None,
+        system_include_dir: sl.StrList = None,
         link_lib: sl.StrList = None,
         link_lib_dir: sl.StrList = None,
         predefine: sl.StrList = None,
         compile_option: sl.StrList = None,
+        link_option: sl.StrList = None,
         output_dir: typing.Union[None, str] = None,
+        target_property: sl.PairList = None,
         package_header_dir_hint: typing.Union[None, str] = None,
     ):
         """
@@ -103,6 +168,8 @@ class Target:
 
         self._include_dir = sl.get_list(include_dir)
 
+        self._system_include_dir = sl.get_list(system_include_dir)
+
         self._link_lib = sl.get_list(link_lib)
 
         self._link_lib_dir = sl.get_list(link_lib_dir)
@@ -111,9 +178,13 @@ class Target:
 
         self._compile_option = sl.get_list(compile_option)
 
+        self._link_option = sl.get_list(link_option)
+
         self._cmake_target_generated = False
 
         self._output_dir = output_dir
+
+        self._target_property = sl.get_list(target_property)
 
         self._package_header_dir_hint = package_header_dir_hint
 
@@ -128,8 +199,13 @@ class Target:
     def add_dependency_target(self, dependency_target: sl.StrList):
         self._dependency_target.extend(sl.get_list(dependency_target))
 
-    def add_include_dir(self, include_dir: sl.StrList):
-        self._include_dir.extend(sl.get_list(include_dir))
+    def add_include_dir(
+        self, include_dir: sl.StrList, is_system_header: bool = False
+    ):
+        if not is_system_header:
+            self._include_dir.extend(sl.get_list(include_dir))
+        else:
+            self._system_include_dir.extend(sl.get_list(include_dir))
 
     def add_link_lib(self, link_lib: sl.StrList):
         self._link_lib.extend(sl.get_list(link_lib))
@@ -143,12 +219,18 @@ class Target:
     def add_compile_option(self, compile_option: sl.StrList):
         self._compile_option.extend(sl.get_list(compile_option))
 
+    def add_link_option(self, link_option: sl.StrList):
+        self._link_option.extend(sl.get_list(link_option))
+
+    def add_target_property(self, target_property: sl.PairList):
+        self._target_property.extend(sl.get_list(target_property))
+
     def generate_cmake_target(self):
         if self._type == Target.Type.HEADER_ONLY:
             return
         if self._name is None:
             logger.error("target name not being set")
-            return
+            raise
 
         if self._type == Target.Type.EXE:
             if self._sub_type is None:
@@ -184,6 +266,11 @@ class Target:
                 self._name, cmk.PRIVATE, self._include_dir
             )
 
+        if len(self._system_include_dir) > 0:
+            cmk.target_include_directories(
+                self._name, cmk.SYSTEM, cmk.PRIVATE, self._system_include_dir
+            )
+
         if len(self._link_lib_dir) > 0:
             cmk.target_link_directories(
                 self._name, cmk.PRIVATE, self._link_lib_dir
@@ -202,11 +289,19 @@ class Target:
                 self._name, cmk.PRIVATE, self._compile_option
             )
 
+        if len(self._link_option) > 0:
+            cmk.target_link_options(self._name, cmk.PRIVATE, self._link_option)
+
         if len(self._dependency_target) > 0:
             cmk.target_link_libraries(
                 self._name, cmk.PRIVATE, self._dependency_target
             )
             cmk.add_dependencies(self._name, self._dependency_target)
+
+        if len(self._target_property) > 0:
+            cmk.set_target_properties(
+                self._name, cmk.PROPERTIES, self._target_property
+            )
 
         proj = Project.get_project()
         if self._output_dir is None:
@@ -258,7 +353,7 @@ class Target:
             )
 
 
-_DEFAULT_CPP_VERSION = "20"
+_DEFAULT_CPP_VERSION = "17"
 
 
 def _get_pycmake_language(language: str):
@@ -347,9 +442,7 @@ class Project:
 
         self._cpp_version = cpp_version
 
-        self._language = [
-            _get_pycmake_language(l) for l in sl.get_list(language)
-        ]
+        self._language = sl.get_list(language)
 
         self._project_version = project_version
 
@@ -416,24 +509,32 @@ class Project:
 
         else:
             logger.error(f"no mmk.py found in specified sub_dir: {sub_dir}")
+            raise
 
     def generate_cmake(self):
         cmk.cmake_minimum_required(cmk.VERSION, self._cmake_version)
+
+        if get_target_os().is_apple_os():
+            cmk.cmake_set(
+                "CMAKE_OSX_SYSROOT", get_target_os().get_apple_sdk_name()
+            )
+
         cmk.project(
             self._project_name,
             cmk.VERSION,
             self._project_version,
             cmk.LANGUAGES,
-            self._language,
+            [_get_pycmake_language(l) for l in self._language],
         )
 
         # CMAKE_CXX_FLAGS IS a cmake variable which is a string, not like target_compile_options
-        proj_compile_option = " ".join(self._compile_option)
+        proj_compile_option = []
+        proj_compile_option.extend(self._compile_option)
 
         cpp_version_compile_option = "-std=c++" + self._cpp_version
         if self._cpp_compiler == "msvc":
             cpp_version_compile_option = "/std:c++" + self._cpp_version
-        proj_compile_option += " " + cpp_version_compile_option
+        proj_compile_option.append(cpp_version_compile_option)
 
         if self._use_preset_compile_option:
 
@@ -441,11 +542,20 @@ class Project:
             if self._cpp_compiler == "msvc":
                 prefix_compile_option = "/WX /Zc:preprocessor"
 
-            proj_compile_option += " " + prefix_compile_option
+            proj_compile_option.extend(prefix_compile_option.split(" "))
 
+        # cmk.add_compile_options(proj_compile_option)
+
+        proj_compile_option = " ".join(proj_compile_option)
         cmk.cmake_set(
-            cmk.CMAKE_CXX_FLAGS, "${CMAKE_CXX_FLAGS}" + proj_compile_option
+            cmk.CMAKE_CXX_FLAGS, "${CMAKE_CXX_FLAGS} " + proj_compile_option
         )
+
+        if "objcxx" in self._language:
+            cmk.cmake_set(
+                cmk.CMAKE_OBJCXX_FLAGS,
+                "${CMAKE_OBJCXX_FLAGS} " + proj_compile_option,
+            )
 
         # add cmake target according to topological order of dependency graph
         count_of_target_generated = 0

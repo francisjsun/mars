@@ -138,6 +138,7 @@ class Target:
         sub_type: typing.Union[SubType, None] = None,
         source: sl.StrList = None,
         dependency_target: sl.StrList = None,
+        dependeny_cmake_package: sl.StrList = None,
         include_dir: sl.StrList = None,
         system_include_dir: sl.StrList = None,
         link_lib: sl.StrList = None,
@@ -165,6 +166,8 @@ class Target:
         self._name = name
 
         self._dependency_target = sl.get_list(dependency_target)
+
+        self._dependency_cmake_package = sl.get_list(dependeny_cmake_package)
 
         self._include_dir = sl.get_list(include_dir)
 
@@ -198,6 +201,13 @@ class Target:
 
     def add_dependency_target(self, dependency_target: sl.StrList):
         self._dependency_target.extend(sl.get_list(dependency_target))
+
+    def add_dependency_cmake_package(
+        self, dependency_cmake_package: sl.StrList
+    ):
+        self._dependency_cmake_package.extend(
+            sl.get_list(dependency_cmake_package)
+        )
 
     def add_include_dir(
         self, include_dir: sl.StrList, is_system_header: bool = False
@@ -297,6 +307,18 @@ class Target:
                 self._name, cmk.PRIVATE, self._dependency_target
             )
             cmk.add_dependencies(self._name, self._dependency_target)
+
+        for dep_cmk_pkg in self._dependency_cmake_package:
+            cmk.find_package(dep_cmk_pkg, cmk.REQUIRED)
+            cmk.target_include_directories(
+                self._name,
+                cmk.SYSTEM,
+                cmk.PRIVATE,
+                f"${{{dep_cmk_pkg}_INCLUDE_DIRS}}",
+            )
+            cmk.target_link_libraries(
+                self._name, cmk.PRIVATE, f"${{{dep_cmk_pkg}_LIBRARIES}}"
+            )
 
         if len(self._target_property) > 0:
             cmk.set_target_properties(

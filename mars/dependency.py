@@ -32,18 +32,18 @@ if os.path.isfile(DEFAULT_DEP_DIR):
 if not os.path.isdir(DEFAULT_DEP_DIR):
     os.makedirs(DEFAULT_DEP_DIR)
 
-arg_parser = argparse.ArgumentParser(description=__doc__)
-arg_parser.add_argument(
+misc.arg_parser.add_argument(
     "-l",
     "--local",
     action="store_true",
     dest="local",
     help="Use local repository",
 )
-arg_parser.add_argument(
+misc.arg_parser.add_argument(
     "-d", "--dirty", action="store_true", dest="dirty", help="Use dirty local"
 )
-args = arg_parser.parse_args()
+
+args = misc.arg_parser.parse_args()
 
 if args.local:
     logger.warning("too dangerous! TODO")
@@ -150,7 +150,9 @@ def _fixer_fs_git_proj_download_method(dep_info):
         runpy.run_path(new_setup_py_path, run_name="__main__")
 
     if os.path.isfile("mmk.py"):
-        misc.run_cmd(f"{sys.executable} mmk.py -p folder")
+        misc.run_cmd(
+            f"{sys.executable} mmk.py --target-os {args.target_os} --target-abi {args.target_abi} -p folder"
+        )
         # set last_dep_method_ret for next step
         # -p folder will package the project in the root dir
         dep_info.last_dep_method_ret = os.path.abspath(dep_name)

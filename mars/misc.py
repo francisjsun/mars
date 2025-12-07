@@ -3,8 +3,110 @@ import logging
 import re
 import subprocess
 import shutil
+import enum
+import argparse
+import typing
+import platform
 
 logger = logging.getLogger(__name__)
+
+arg_parser = argparse.ArgumentParser(description=__doc__)
+
+
+class MEnum(enum.Enum):
+    @classmethod
+    def _get_map_from_str_to_enum(cls, map_str_to_enum) -> dict:
+        if not hasattr(cls, "MAP_STR_TO_ENUM"):
+            cls.MAP_STR_TO_ENUM = map_str_to_enum
+
+        return cls.MAP_STR_TO_ENUM
+
+    @classmethod
+    def get_map_from_enum_to_str(cls) -> dict:
+        if not hasattr(cls, "MAP_ENUM_TO_STR"):
+            cls.MAP_ENUM_TO_STR = {}
+            for k, v in cls.MAP_STR_TO_ENUM.items():
+                cls.MAP_ENUM_TO_STR[v] = k
+
+        return cls.MAP_ENUM_TO_STR
+
+    def __str__(self):
+        # the MAP_STR_TO_ENUM stores in derived class
+        return type(self).get_map_from_enum_to_str()[self]
+
+
+class TargetOS(MEnum):
+    INVALID = 0
+    MACOS = 1
+    IOS = 2
+    WIN = 3
+    ANDROID = 4
+    LINUX = 5
+    IOS_SIMULATOR = 6
+
+    @classmethod
+    def get_map_from_str_to_enum(cls) -> dict:
+        return super()._get_map_from_str_to_enum(
+            {
+                "macos": cls.MACOS,
+                "Darwin": cls.MACOS,
+                "ios": cls.IOS,
+                "win": cls.WIN,
+                "Windows": cls.WIN,
+                "android": cls.ANDROID,
+                "linux": cls.LINUX,
+                "Linux": cls.LINUX,
+                "ios-sim": cls.IOS_SIMULATOR,
+            }
+        )
+
+    def is_apple_os(self):
+        return (
+            self == TargetOS.MACOS
+            or self == TargetOS.IOS
+            or self == TargetOS.IOS_SIMULATOR
+        )
+
+    def get_apple_sdk_name(self):
+        return {
+            TargetOS.MACOS: "macosx",
+            TargetOS.IOS: "iphoneos",
+            TargetOS.IOS_SIMULATOR: "iphonesimulator",
+        }[self]
+
+
+arg_parser.add_argument(
+    "--target-os",
+    action="store",
+    dest="target_os",
+    default=os.uname()[0],
+    help=f"specify the building target os, must be one of {[ os_name for os_name in TargetOS.get_map_from_str_to_enum().keys()]}",
+)
+
+
+class TargetABI(MEnum):
+    INVALID = 0
+    ARM64_V8A = 1
+    X86 = 2
+
+    @classmethod
+    def get_map_from_str_to_enum(cls):
+        return super()._get_map_from_str_to_enum(
+            {
+                "arm64-v8a": cls.ARM64_V8A,
+                "arm64": cls.ARM64_V8A,
+                "x86": cls.X86,
+            }
+        )
+
+
+arg_parser.add_argument(
+    "--target-abi",
+    action="store",
+    dest="target_abi",
+    default=os.uname()[4],
+    help=f"specify the building target abi, must be one of {[ abi_name for abi_name in TargetABI.get_map_from_str_to_enum().keys()]}",
+)
 
 
 def find_files_in_dir_with_extensions(
@@ -83,7 +185,12 @@ def find_files_in_dir_with_extensions(
     return ret_files
 
 
-def run_cmd(cmd, capture_output: bool = False):
+def run_cmd(
+    cmd,
+    *,
+    capture_output: bool = False,
+    working_dir: typing.Union[None, str] = None,
+):
     lst_cmd = cmd
     if isinstance(cmd, str):
         lst_cmd = cmd.split(" ")
@@ -93,7 +200,10 @@ def run_cmd(cmd, capture_output: bool = False):
         logger.error(f"wrong type of cmd {type(cmd)}")
 
     ret = subprocess.run(
-        lst_cmd, capture_output=capture_output, text=capture_output
+        lst_cmd,
+        capture_output=capture_output,
+        text=capture_output,
+        cwd=working_dir,
     )
     return ret.returncode, (
         ret.stdout[:-1]

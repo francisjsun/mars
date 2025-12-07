@@ -2,6 +2,7 @@ __doc__ = """
 mars make, a.k.a. mmk
 """
 import pycmake.cmake as cmk
+import pycmake.cmake_presets as cmk_presets
 from . import misc
 import re
 import logging
@@ -24,71 +25,16 @@ _ROOT_DIR = os.path.abspath(os.path.dirname(sys.argv[0]))
 
 _DEFAULT_PACKAGE_DIR_NAME = "."  # TODO "mars_pkg"
 
-arg_parser = argparse.ArgumentParser(description=__doc__)
-
-
-class TargetOS(enum.Enum):
-    INVALID = 0
-    MACOS = 1
-    IOS = 2
-    WIN = 3
-    ANDROID = 4
-    LINUX = 5
-    IOS_SIMULATOR = 6
-
-    @classmethod
-    def from_str(cls, os_name: str):
-        if os_name == "macos" or os_name == "Darwin":
-            return cls.MACOS
-        elif os_name == "ios":
-            return cls.IOS
-        elif os_name == "ios-sim":
-            return cls.IOS_SIMULATOR
-        elif os_name == "win" or os_name == "Windows":
-            return cls.WIN
-        elif os_name == "android":
-            return cls.ANDROID
-        elif os_name == "linux" or os_name == "Linux":
-            return cls.LINUX
-        else:
-            logger.error(f"unknown os_name: {os_name}")
-            raise
-
-    def is_apple_os(self):
-        return (
-            self == TargetOS.MACOS
-            or self == TargetOS.IOS
-            or self == TargetOS.IOS_SIMULATOR
-        )
-
-    def get_apple_sdk_name(self):
-        return {
-            TargetOS.MACOS: "macosx",
-            TargetOS.IOS: "iphoneos",
-            TargetOS.IOS_SIMULATOR: "iphonesimulator",
-        }[self]
-
-    def __str__(self):
-        return {
-            TargetOS.MACOS: "macos",
-            TargetOS.IOS: "ios",
-            TargetOS.WIN: "win",
-            TargetOS.ANDROID: "android",
-            TargetOS.LINUX: "linux",
-            TargetOS.IOS_SIMULATOR: "ios-sim",
-        }[self]
-
-
-arg_parser.add_argument(
+misc.arg_parser.add_argument(
     "-t",
-    "--target-os",
+    "--targets",
     action="store",
-    dest="target_os",
-    default=platform.system(),
-    help="specify build target, must be one of [macos, ios, win, android, linux, ios-sim]",
+    dest="targets",
+    default=None,
+    help="specify the building targets",
 )
 
-arg_parser.add_argument(
+misc.arg_parser.add_argument(
     "-p",
     "--package",
     dest="package_type",
@@ -96,17 +42,28 @@ arg_parser.add_argument(
     help="package and specify packaging type: [folder|tar|zip]. i.e. -p tar",
 )
 
-args = arg_parser.parse_args()
+args = misc.arg_parser.parse_args()
+
+TARGETS = set(args.targets.split(" ")) if args.targets is not None else set()
+
+TARGET_OS = misc.TargetOS.get_map_from_str_to_enum()[args.target_os]
+
+TARGET_ABI = misc.TargetABI.get_map_from_str_to_enum()[args.target_abi]
 
 
-def get_target_os() -> TargetOS:
-    return TargetOS.from_str(args.target_os)
+def _get_default_cpp_compiler():
+    cpp_compiler = "clang"
+    if TARGET_OS == misc.TargetOS.WIN:
+        cpp_compiler = "msvc"
+    elif TARGET_OS == misc.TargetOS.LINUX:
+        cpp_compiler = "gcc"
+    return cpp_compiler
 
 
 def get_apple_sdk_dir() -> str:
-    if get_target_os().is_apple_os():
+    if TARGET_OS.is_apple_os():
         return_code, apple_sdk_dir = misc.run_cmd(
-            f"xcrun --sdk {get_target_os().get_apple_sdk_name()} --show-sdk-path",
+            f"xcrun --sdk {TARGET_OS.get_apple_sdk_name()} --show-sdk-path",
             capture_output=True,
         )
         if return_code != 0:
@@ -183,6 +140,7 @@ class Target:
 
         self._link_option = sl.get_list(link_option)
 
+        # for dependency resolving
         self._cmake_target_generated = False
 
         self._output_dir = output_dir
@@ -192,11 +150,13 @@ class Target:
         self._package_header_dir_hint = package_header_dir_hint
 
     def add_source(self, source: sl.StrList):
+        source_dir = _ROOT_DIR
+        try:
+            source_dir = Project.get_project().get_current_mmk_dir()
+        except Exception as e:
+            pass
         self._source_in_full_path.extend(
-            [
-                os.path.join(Project.get_project().get_current_mmk_dir(), fp_s)
-                for fp_s in sl.get_list(source)
-            ]
+            [os.path.join(source_dir, fp_s) for fp_s in sl.get_list(source)]
         )
 
     def add_dependency_target(self, dependency_target: sl.StrList):
@@ -340,16 +300,25 @@ class Target:
             self._output_dir,
             cmk.DEBUG_POSTFIX,
             proj._bin_debug_postfix,
+            cmk.OUTPUT_NAME,
+            self.get_output_name(),
         )
 
         self._cmake_target_generated = True
+
+    def get_output_name(self):
+        # name-os-compiler-abi
+        proj = Project.get_project()
+        if self._name is None:
+            raise
+        return proj.format_target_output_name(self._name)
 
     def build(self, build_type: str):
         if self._type != Target.Type.HEADER_ONLY:
             if os.path.isdir("build"):
                 shutil.rmtree("build")
             ret, _ = misc.run_cmd(
-                f"cmake -DCMAKE_BUILD_TYPE={build_type} -S . -B build"
+                f"cmake --preset {TARGET_OS} -DCMAKE_BUILD_TYPE={build_type} -S . -B build"
             )
             if ret == 0:
                 ret, _ = misc.run_cmd(
@@ -390,17 +359,8 @@ def _get_pycmake_language(language: str):
     return pycmake_language
 
 
-def _get_default_cpp_compiler():
-    sys_name = platform.system()
-    cpp_compiler = "clang"
-    if sys_name == "Windows":
-        cpp_compiler = "msvc"
-    elif sys_name == "Linux":
-        cpp_compiler = "gcc"
-    return cpp_compiler
-
-
 DEFAULT_OUTPUT_DIR = "bin"
+DEFAULT_BUILD_DIR = "build"
 BIN_DEBUG_POSTFIX = "d"
 
 
@@ -425,6 +385,10 @@ class Project:
         bin_debug_postfix: str = BIN_DEBUG_POSTFIX,
         compile_option: sl.StrList = None,
         use_preset_compile_option: bool = True,
+        android_tool_chain_cmake_file_path: str = "",
+        android_abi: str = "",
+        android_sdk_version: str = "",
+        cmake_presets_file_path: typing.Union[str, None] = None,
     ) -> None:
         """
         kwargs consists of cmake_version,
@@ -438,8 +402,12 @@ class Project:
         if Project._THE_PROJECT is None:
             Project._THE_PROJECT = self
         else:
-            logger.error("the project has been created, cannot create more")
+            logger.error(f"you can only have one project")
             raise
+
+        self._external_project_dir = []
+
+        self._cmake_presets = cmk_presets.CMakePresets(cmake_presets_file_path)
 
         self._current_mmk_dir_stack = [_ROOT_DIR]
         self._project_dir = _ROOT_DIR
@@ -476,7 +444,7 @@ class Project:
                 # main project could share the same name of project
                 # if the name not provided
                 target._name = self._project_name
-            self._target[target._name] = target
+            self.add_target(target)
 
         self._output_dir = os.path.join(self._project_dir, output_dir)
 
@@ -486,16 +454,43 @@ class Project:
 
         self._use_preset_compile_option = use_preset_compile_option
 
+        self._android_tool_chain_cmake_file_path = (
+            android_tool_chain_cmake_file_path
+        )
+
+        self._android_abi = android_abi
+        self._android_sdk_version = android_sdk_version
+
     def add_target(self, target: Target):
         target_name = target._name
         if target_name is not None:
-            self._target[target_name] = target
+            if len(TARGETS) > 0 and target_name not in TARGETS:
+                logger.warning(
+                    f"target name: {target_name} was not be specified, will be skipped"
+                )
+                return None
+            else:
+                self._target[target_name] = target
         else:
             logger.error(
                 "target name must be specified when using in add_target"
             )
 
         return target
+
+    def format_target_output_name(self, target_name: str) -> str:
+        return (
+            target_name
+            + "-"
+            + str(TARGET_OS)
+            + "-"
+            + self.get_cpp_compiler_name()
+            + "-"
+            + str(TARGET_ABI)
+        )
+
+    def get_cpp_compiler_name(self):
+        return self._cpp_compiler
 
     def get_target(self, target_name: str) -> Target:
         if target_name in self._target:
@@ -511,8 +506,7 @@ class Project:
         if cls._THE_PROJECT is not None:
             return cls._THE_PROJECT
         else:
-            logger.error("the project has not been created yet")
-            raise
+            raise Exception("the project has not been created yet")
 
     def get_current_mmk_dir(self):
         return self._current_mmk_dir_stack[-1]
@@ -520,11 +514,49 @@ class Project:
     def get_project_dir(self):
         return self._project_dir
 
+    def add_external_project(
+        self,
+        external_proj_dir: str,
+        external_proj_additional_args: sl.StrList = None,
+    ):
+        external_proj_dir = os.path.join(
+            self.get_current_mmk_dir(), external_proj_dir
+        )
+        mmk_path = os.path.join(external_proj_dir, MMK_FILE_NAME)
+        if os.path.isfile(mmk_path):
+            list_external_proj_args = sl.get_list(
+                external_proj_additional_args
+            )
+            if len(list_external_proj_args) > 0:
+                set_args = set(list_external_proj_args)
+                if "--target-os" in set_args or "--target-abi" in set_args:
+                    logger.error(
+                        "you should not specify either --target-os or --target-abi for the external project"
+                    )
+                    raise
+                list_external_proj_args.append("--target-os")
+                list_external_proj_args.append(args.target_os)
+
+                list_external_proj_args.append("--target-abi")
+                list_external_proj_args.append(args.target_abi)
+            run_param = [sys.executable, mmk_path]
+            run_param.extend(
+                sys.argv[1:]
+                if len(list_external_proj_args) == 0
+                else list_external_proj_args
+            )
+
+            logger.info(
+                f"executing the sub project {mmk_path} with param {run_param[2:]}"
+            )
+            misc.run_cmd(run_param, working_dir=external_proj_dir)
+
+            self._external_project_dir.append(os.path.dirname(mmk_path))
+
     def add_sub_dir(self, sub_dir: str):
         cur_dir = os.path.join(self.get_current_mmk_dir(), sub_dir)
         mmk_path = os.path.join(cur_dir, MMK_FILE_NAME)
         if os.path.isfile(mmk_path):
-
             self._current_mmk_dir_stack.append(os.path.join(cur_dir))
             runpy.run_path(mmk_path)
             self._current_mmk_dir_stack.pop()
@@ -534,12 +566,10 @@ class Project:
             raise
 
     def generate_cmake(self):
-        cmk.cmake_minimum_required(cmk.VERSION, self._cmake_version)
+        # generate CMakePresets.json
+        self._cmake_presets.store_to_file()
 
-        if get_target_os().is_apple_os():
-            cmk.cmake_set(
-                "CMAKE_OSX_SYSROOT", get_target_os().get_apple_sdk_name()
-            )
+        cmk.cmake_minimum_required(cmk.VERSION, self._cmake_version)
 
         cmk.project(
             self._project_name,
@@ -549,10 +579,22 @@ class Project:
             [_get_pycmake_language(l) for l in self._language],
         )
 
+        for external_proj_dir in self._external_project_dir:
+            # need to specify the binary dir here due to it could be out-of-tree case
+            cmk.add_subdirectory(
+                external_proj_dir,
+                os.path.join(
+                    self._project_dir,
+                    DEFAULT_BUILD_DIR,
+                    os.path.basename(external_proj_dir),
+                ),
+            )
+
         # CMAKE_CXX_FLAGS IS a cmake variable which is a string, not like target_compile_options
         proj_compile_option = []
         proj_compile_option.extend(self._compile_option)
 
+        # TODO move to cmake presets
         cpp_version_compile_option = "-std=c++" + self._cpp_version
         if self._cpp_compiler == "msvc":
             cpp_version_compile_option = "/std:c++" + self._cpp_version

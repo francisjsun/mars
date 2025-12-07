@@ -96,6 +96,4 @@ def pkg(
                 # TODO
                 pass
 
-    logger.info(
-        f"end of packaging: {os.path.abspath(os.path.join(pkg_dir, pkg_name))}"
-    )
+    logger.info(f"end of packaging: {os.path.abspath(pkg_dir)}")

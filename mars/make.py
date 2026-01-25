@@ -46,9 +46,9 @@ args = misc.arg_parser.parse_args()
 
 TARGETS = set(args.targets.split(" ")) if args.targets is not None else set()
 
-TARGET_OS = misc.TargetOS.get_map_from_str_to_enum()[args.target_os]
+TARGET_OS = misc.TargetOS.from_str(args.target_os)
 
-TARGET_ABI = misc.TargetABI.get_map_from_str_to_enum()[args.target_abi]
+TARGET_ABI = misc.TargetABI.from_str(args.target_abi)
 
 
 def _get_default_cpp_compiler():
@@ -135,6 +135,8 @@ class Target:
         self._link_lib_dir = sl.get_list(link_lib_dir)
 
         self._predefine = sl.get_list(predefine)
+        if args.target_discrete_gpu:
+            self._predefine.append("FS_MARS_HW_DISCRETE_GPU")
 
         self._compile_option = sl.get_list(compile_option)
 
@@ -317,6 +319,7 @@ class Target:
         if self._type != Target.Type.HEADER_ONLY:
             if os.path.isdir("build"):
                 shutil.rmtree("build")
+
             ret, _ = misc.run_cmd(
                 f"cmake --preset {TARGET_OS} -DCMAKE_BUILD_TYPE={build_type} -S . -B build"
             )
@@ -539,6 +542,10 @@ class Project:
 
                 list_external_proj_args.append("--target-abi")
                 list_external_proj_args.append(args.target_abi)
+
+                if args.target_discrete_gpu:
+                    list_external_proj_args.append("--target-discrete_gpu")
+
             run_param = [sys.executable, mmk_path]
             run_param.extend(
                 sys.argv[1:]
@@ -565,7 +572,9 @@ class Project:
             logger.error(f"no mmk.py found in specified sub_dir: {sub_dir}")
             raise
 
-    def generate_cmake(self):
+    # only generate pycmake cmd here
+    # CMakeLists.txt will get generated after the current python running session is done
+    def generate_pycmake_cmd(self):
         # generate CMakePresets.json
         self._cmake_presets.store_to_file()
 
@@ -642,11 +651,24 @@ class Project:
                     t.generate_cmake_target()
                     count_of_target_generated += 1
 
+    def generate_cmake_(self):
+        cmk.generate_cmake_list_file_()
+
+    def package(self):
+        # generate CMakeLists.txt
+        self.generate_cmake_()
+
+        # build
+        for t in self._target.values():
+            if t._package_header_dir_hint is not None:
+                t.build("debug")
+                t.build("release")
+
+                # TODO only package what have build
+                t.package(args.package_type)
+
+    def generate(self):
+        self.generate_pycmake_cmd()
         # package
         if args.package_type != None:
-            for t in self._target.values():
-                if t._package_header_dir_hint is not None:
-                    t.build("debug")
-                    t.build("release")
-
-                    t.package(args.package_type)
+            self.package()

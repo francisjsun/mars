@@ -26,6 +26,9 @@ class MEnum(enum.Enum):
         if not hasattr(cls, "MAP_ENUM_TO_STR"):
             cls.MAP_ENUM_TO_STR = {}
             for k, v in cls.MAP_STR_TO_ENUM.items():
+                if v in cls.MAP_ENUM_TO_STR:
+                    logger.error(f"key: {v} already exists in MAP_ENUM_TO_STR")
+                    raise
                 cls.MAP_ENUM_TO_STR[v] = k
 
         return cls.MAP_ENUM_TO_STR
@@ -45,17 +48,37 @@ class TargetOS(MEnum):
     IOS_SIMULATOR = 6
 
     @classmethod
+    def from_str(cls, str_enum):
+        return cls.get_map_from_str_to_enum()[
+            # os alias
+            {
+                # macos
+                "macos": "macos",
+                "Darwin": "macos",
+                "darwin": "macos",
+                # win
+                "win": "win",
+                "Windows": "windows",
+                "windows": "windows",
+                # android
+                "android": "android",
+                # linux
+                "linux": "linux",
+                "Linux": "linux",
+                # ios-sim
+                "ios-sim": "ios-sim",
+            }[str_enum]
+        ]
+
+    @classmethod
     def get_map_from_str_to_enum(cls) -> dict:
         return super()._get_map_from_str_to_enum(
             {
                 "macos": cls.MACOS,
-                "Darwin": cls.MACOS,
                 "ios": cls.IOS,
                 "win": cls.WIN,
-                "Windows": cls.WIN,
                 "android": cls.ANDROID,
                 "linux": cls.LINUX,
-                "Linux": cls.LINUX,
                 "ios-sim": cls.IOS_SIMULATOR,
             }
         )
@@ -90,11 +113,24 @@ class TargetABI(MEnum):
     X86 = 2
 
     @classmethod
+    def from_str(cls, str_enum):
+        return cls.get_map_from_str_to_enum()[
+            # abi alias
+            {
+                # arm64-v8a
+                "arm64-v8a": "arm64-v8a",
+                "arm64": "arm64-v8a",
+                # x86
+                "x86": "x86",
+                "X86": "x86",
+            }[str_enum]
+        ]
+
+    @classmethod
     def get_map_from_str_to_enum(cls):
         return super()._get_map_from_str_to_enum(
             {
                 "arm64-v8a": cls.ARM64_V8A,
-                "arm64": cls.ARM64_V8A,
                 "x86": cls.X86,
             }
         )
@@ -106,6 +142,13 @@ arg_parser.add_argument(
     dest="target_abi",
     default=os.uname()[4],
     help=f"specify the building target abi, must be one of {[ abi_name for abi_name in TargetABI.get_map_from_str_to_enum().keys()]}",
+)
+
+arg_parser.add_argument(
+    "--target-discrete-gpu",
+    action="store_true",
+    dest="target_discrete_gpu",
+    help=f"specify if the building target has discrete GPU",
 )
 
 
@@ -190,6 +233,7 @@ def run_cmd(
     *,
     capture_output: bool = False,
     working_dir: typing.Union[None, str] = None,
+    print_cmd: bool = False,
 ):
     lst_cmd = cmd
     if isinstance(cmd, str):
@@ -198,6 +242,12 @@ def run_cmd(
         lst_cmd = cmd
     else:
         logger.error(f"wrong type of cmd {type(cmd)}")
+
+    if print_cmd:
+        str_cmd = ""
+        for lc in lst_cmd:
+            str_cmd += lc + " "
+        logger.info(f"run_cmd: {str_cmd}")
 
     ret = subprocess.run(
         lst_cmd,

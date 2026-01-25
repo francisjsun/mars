@@ -22,4 +22,4 @@ t_test1 = proj.add_target(
 
 proj.add_sub_dir("sub_dir")
 
-proj.generate_cmake()
+proj.generate()
